@@ -1,6 +1,6 @@
 [package]
 name = "sap-rs"
-version = "0.2.2"
+version = "0.2.3"
 edition = "2021"
 authors = ["Michael Bachmann <mbachmann@bbmsoft.net>"]
 description = "A pure Rust implementation of the Session Announcement Protocol"
@@ -14,6 +14,7 @@ lazy_static = "1.5.0"
 log = "0.4.22"
 murmur3 = "0.5.2"
 sdp = "0.6.2"
+socket2 = "0.5.7"
 thiserror = "1.0.63"
 tokio = { version = "1.40.0", features = ["macros", "net", "time"] }
 

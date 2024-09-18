@@ -19,6 +19,7 @@ use error::{Error, SapResult};
 use lazy_static::lazy_static;
 use murmur3::murmur3_32;
 use sdp::SessionDescription;
+use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::{
     io::Cursor,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
@@ -74,13 +75,15 @@ pub struct Sap {
 
 impl Sap {
     pub async fn new() -> SapResult<Self> {
-        let socket = UdpSocket::bind(format!("0.0.0.0:{DEFAULT_SAP_PORT}")).await?;
-        let multicast_addr: IpAddr = DEFAULT_MULTICAST_ADDRESS.parse()?;
-        let socket_addr = SocketAddr::new(multicast_addr, DEFAULT_SAP_PORT);
+        let multicast_addr = SocketAddr::new(
+            IpAddr::V4(DEFAULT_MULTICAST_ADDRESS.parse()?),
+            DEFAULT_SAP_PORT,
+        );
+        let socket = create_socket().await?;
 
         Ok(Sap {
             socket,
-            multicast_addr: socket_addr,
+            multicast_addr,
             deletion_announcement: None,
         })
     }
@@ -250,6 +253,22 @@ pub fn encode_sap(msg: &SessionAnnouncement) -> Vec<u8> {
 
 fn sdp_hash(sdp: &SessionDescription) -> u16 {
     murmur3_32(&mut Cursor::new(sdp.marshal()), *HASH_SEED).unwrap_or(0) as u16
+}
+
+async fn create_socket() -> SapResult<UdpSocket> {
+    let multicast_addr: Ipv4Addr = DEFAULT_MULTICAST_ADDRESS.parse()?;
+    let local_ip = Ipv4Addr::UNSPECIFIED;
+    let local_addr = SocketAddr::new(IpAddr::V4(local_ip), DEFAULT_SAP_PORT);
+
+    let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
+    socket.set_reuse_address(true)?;
+    socket.set_reuse_port(true)?;
+    socket.bind(&SockAddr::from(local_addr))?;
+    socket.join_multicast_v4(&multicast_addr, &local_ip)?;
+
+    let tokio_socket = UdpSocket::from_std(socket.into())?;
+
+    Ok(tokio_socket)
 }
 
 #[cfg(test)]
