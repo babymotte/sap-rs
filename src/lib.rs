@@ -41,14 +41,14 @@ lazy_static! {
 
 #[derive(Debug, Clone)]
 pub struct SessionAnnouncement {
-    deletion: bool,
-    encrypted: bool,
-    compressed: bool,
-    msg_id_hash: u16,
-    auth_data: Option<String>,
-    originating_source: IpAddr,
-    payload_type: Option<String>,
-    sdp: SessionDescription,
+    pub deletion: bool,
+    pub encrypted: bool,
+    pub compressed: bool,
+    pub msg_id_hash: u16,
+    pub auth_data: Option<String>,
+    pub originating_source: IpAddr,
+    pub payload_type: Option<String>,
+    pub sdp: SessionDescription,
 }
 
 impl SessionAnnouncement {
