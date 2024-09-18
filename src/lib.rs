@@ -134,7 +134,7 @@ fn encode_sap(msg: &SessionAnnouncement) -> Vec<u8> {
     let t = if msg.deletion { 1u8 } else { 0u8 };
     let e = if msg.encrypted { 1u8 } else { 0u8 };
     let c = if msg.compressed { 1u8 } else { 0u8 };
-    let header = v << 5 | a << 4 | r << 3 | t << 2 | e << 1 | c << 0;
+    let header = v << 5 | a << 4 | r << 3 | t << 2 | e << 1 | c;
     let auth_len = msg
         .auth_data
         .as_ref()
