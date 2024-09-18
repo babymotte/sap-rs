@@ -133,7 +133,7 @@ pub fn decode_sap(msg: &[u8]) -> SapResult<SessionAnnouncement> {
 
     let header = msg[0];
     let auth_len = msg[1];
-    let msg_id_hash = u16::from_le_bytes([msg[2], msg[3]]);
+    let msg_id_hash = u16::from_be_bytes([msg[2], msg[3]]);
 
     let ipv6 = header & 0b00001000 >> 3 == 1;
     let deletion = header & 0b00000100 >> 2 == 1;
@@ -160,13 +160,13 @@ pub fn decode_sap(msg: &[u8]) -> SapResult<SessionAnnouncement> {
     }
 
     let originating_source = if ipv6 {
-        let bits = u128::from_le_bytes([
+        let bits = u128::from_be_bytes([
             msg[4], msg[5], msg[6], msg[7], msg[8], msg[9], msg[10], msg[11], msg[12], msg[13],
             msg[14], msg[15], msg[16], msg[17], msg[18], msg[19],
         ]);
         IpAddr::V6(Ipv6Addr::from_bits(bits))
     } else {
-        let bits = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]);
+        let bits = u32::from_be_bytes([msg[4], msg[5], msg[6], msg[7]]);
         IpAddr::V4(Ipv4Addr::from_bits(bits))
     };
 
@@ -229,7 +229,7 @@ pub fn encode_sap(msg: &SessionAnnouncement) -> Vec<u8> {
         .as_ref()
         .map(|d| d.as_bytes().len())
         .unwrap_or(0) as u8;
-    let msg_id_hash = msg.msg_id_hash.to_le_bytes();
+    let msg_id_hash = msg.msg_id_hash.to_be_bytes();
 
     let mut data = Vec::new();
     data.push(header);
