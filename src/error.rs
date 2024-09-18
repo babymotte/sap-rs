@@ -24,6 +24,12 @@ pub enum Error {
     IoError(#[from] io::Error),
     #[error("address parse error: {0}")]
     AddrParseError(#[from] AddrParseError),
+    #[error("malformed session announement packet: {0:?}")]
+    MalformedPacket(Vec<u8>),
+    #[error("sdp parse error: {0}")]
+    SdpParseError(#[from] sdp::Error),
+    #[error("not implemented: {0}")]
+    NotImplemented(&'static str),
 }
 
 pub type SapResult<T> = Result<T, Error>;

@@ -15,13 +15,13 @@
  *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-use error::SapResult;
+use error::{Error, SapResult};
 use lazy_static::lazy_static;
 use murmur3::murmur3_32;
 use sdp::SessionDescription;
 use std::{
     io::Cursor,
-    net::{IpAddr, SocketAddr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{net::UdpSocket, select, time::interval};
@@ -124,7 +124,96 @@ impl Sap {
     }
 }
 
-fn encode_sap(msg: &SessionAnnouncement) -> Vec<u8> {
+pub fn decode_sap(msg: &[u8]) -> SapResult<SessionAnnouncement> {
+    let mut min_length = 4;
+
+    if msg.len() < min_length {
+        return Err(Error::MalformedPacket(msg.to_owned()));
+    }
+
+    let header = msg[0];
+    let auth_len = msg[1];
+    let msg_id_hash = u16::from_le_bytes([msg[2], msg[3]]);
+
+    let ipv6 = header & 0b00001000 >> 3 == 1;
+    let deletion = header & 0b00000100 >> 2 == 1;
+    let encrypted = header & 0b00000010 >> 1 == 1;
+    let compressed = header & 0b00000001 == 1;
+
+    // TODO implement decryption
+    if encrypted {
+        return Err(Error::NotImplemented("encryption"));
+    }
+    // TODO implement decompression
+    if compressed {
+        return Err(Error::NotImplemented("encryption"));
+    }
+
+    if ipv6 {
+        min_length += 16;
+    } else {
+        min_length += 4;
+    }
+
+    if msg.len() < min_length {
+        return Err(Error::MalformedPacket(msg.to_owned()));
+    }
+
+    let originating_source = if ipv6 {
+        let bits = u128::from_le_bytes([
+            msg[4], msg[5], msg[6], msg[7], msg[8], msg[9], msg[10], msg[11], msg[12], msg[13],
+            msg[14], msg[15], msg[16], msg[17], msg[18], msg[19],
+        ]);
+        IpAddr::V6(Ipv6Addr::from_bits(bits))
+    } else {
+        let bits = u32::from_le_bytes([msg[4], msg[5], msg[6], msg[7]]);
+        IpAddr::V4(Ipv4Addr::from_bits(bits))
+    };
+
+    let auth_data_start = min_length;
+
+    min_length += auth_len as usize;
+
+    if msg.len() <= min_length {
+        return Err(Error::MalformedPacket(msg.to_owned()));
+    }
+
+    let auth_data = if auth_len > 0 {
+        Some(String::from_utf8_lossy(&msg[auth_data_start..min_length]).to_string())
+    } else {
+        None
+    };
+
+    let payload = String::from_utf8_lossy(&msg[min_length..]).to_string();
+    let split: Vec<&str> = payload.split('\0').collect();
+
+    let payload_type = if split.len() >= 2 {
+        Some(split[0].to_owned())
+    } else {
+        None
+    };
+
+    let payload = if split.len() == 1 {
+        split[0]
+    } else {
+        &split[1..].join("\0")
+    };
+
+    let sdp = SessionDescription::unmarshal(&mut Cursor::new(payload))?;
+
+    Ok(SessionAnnouncement {
+        deletion,
+        encrypted,
+        compressed,
+        msg_id_hash,
+        auth_data,
+        originating_source,
+        payload_type,
+        sdp,
+    })
+}
+
+pub fn encode_sap(msg: &SessionAnnouncement) -> Vec<u8> {
     let v = 1u8;
     let (a, originating_source): (u8, &[u8]) = match msg.originating_source {
         IpAddr::V4(addr) => (0u8, &addr.octets()),
