@@ -1,6 +1,6 @@
 [package]
 name = "sap-rs"
-version = "0.1.1"
+version = "0.1.0"
 edition = "2021"
 authors = ["Michael Bachmann <mbachmann@bbmsoft.net>"]
 description = "A pure Rust implementation of the Session Announcement Protocol"
