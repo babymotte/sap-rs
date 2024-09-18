@@ -1,0 +1,28 @@
+[package]
+name = "sap-rs"
+version = "0.1.0"
+edition = "2021"
+authors = ["Michael Bachmann <mbachmann@bbmsoft.net>"]
+description = "A pure Rust implementation of the Session Announcement Protocol"
+repository = "https://github.com/babymotte/sap-rs"
+license = "AGPL-3.0-or-later"
+keywords = ["sap", "sdp", "audio", "video"]
+categories = ["multimedia", "network-programming"]
+
+[dependencies]
+lazy_static = "1.5.0"
+log = "0.4.22"
+murmur3 = "0.5.2"
+sdp = "0.6.2"
+thiserror = "1.0.63"
+tokio = { version = "1.40.0", features = ["macros", "net", "time"] }
+
+[lints.rust]
+unsafe_code = "forbid"
+
+[lints.clippy]
+all = "deny"
+enum_glob_use = "deny"
+# pedantic = "deny"
+# nursery = "deny"
+unwrap_used = "deny"
