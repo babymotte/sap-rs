@@ -97,7 +97,8 @@ impl Sap {
             loop {
                 match self.socket.recv(&mut buf).await {
                     Ok(len) => {
-                        if let Err(e) = tx.send(decode_sap(&buf[..len])).await {
+                        let msg = decode_sap(&buf[..len]);
+                        if let Err(e) = tx.send(msg).await {
                             log::error!("Error forwarding SAP message error: {e}");
                             break;
                         }
@@ -165,9 +166,9 @@ pub fn decode_sap(msg: &[u8]) -> SapResult<SessionAnnouncement> {
     let auth_len = msg[1];
     let msg_id_hash = u16::from_be_bytes([msg[2], msg[3]]);
 
-    let ipv6 = header & 0b00001000 >> 3 == 1;
-    let deletion = header & 0b00000100 >> 2 == 1;
-    let encrypted = header & 0b00000010 >> 1 == 1;
+    let ipv6 = (header & 0b00001000) >> 3 == 1;
+    let deletion = (header & 0b00000100) >> 2 == 1;
+    let encrypted = (header & 0b00000010) >> 1 == 1;
     let compressed = header & 0b00000001 == 1;
 
     // TODO implement decryption
@@ -321,5 +322,46 @@ a=mediaclk:direct=0",
         ))
         .unwrap();
         assert!(sdp_hash(&sdp) != 0);
+    }
+
+    #[test]
+    fn encode_decode_roundtrip_is_successful() {
+        let sdp = "v=0
+o=- 123456 123458 IN IP4 10.0.1.2
+s=My sample flow
+i=4 channels: c1, c2, c3, c4
+t=0 0
+a=recvonly
+m=audio 5004 RTP/AVP 98
+c=IN IP4 239.69.11.44/32
+a=rtpmap:98 L24/48000/4
+a=ptime:1
+a=ts-refclk:ptp=IEEE1588-2008:00-11-22-FF-FE-33-44-55:0
+a=mediaclk:direct=0
+";
+
+        let sa = SessionAnnouncement {
+            auth_data: None,
+            payload_type: None,
+            compressed: false,
+            deletion: true,
+            encrypted: false,
+            msg_id_hash: 1234,
+            originating_source: "127.0.0.1".parse().unwrap(),
+            sdp: SessionDescription::unmarshal(&mut Cursor::new(sdp)).unwrap(),
+        };
+
+        let sa_msg = encode_sap(&sa);
+
+        let decoded = decode_sap(&sa_msg).unwrap();
+
+        assert_eq!(sa.auth_data, decoded.auth_data);
+        assert_eq!(sa.compressed, decoded.compressed);
+        assert_eq!(sa.deletion, decoded.deletion);
+        assert_eq!(sa.encrypted, decoded.encrypted);
+        assert_eq!(sa.msg_id_hash, decoded.msg_id_hash);
+        assert_eq!(sa.originating_source, decoded.originating_source);
+        assert_eq!(sa.payload_type, decoded.payload_type);
+        assert_eq!(sa.sdp.marshal().replace('\r', ""), sdp);
     }
 }
