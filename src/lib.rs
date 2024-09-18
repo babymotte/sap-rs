@@ -25,7 +25,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{net::UdpSocket, select, time::interval};
+use tokio::{net::UdpSocket, select, spawn, sync::mpsc, time::interval};
 
 pub mod error;
 
@@ -86,6 +86,33 @@ impl Sap {
             multicast_addr,
             deletion_announcement: None,
         })
+    }
+
+    pub async fn discover_sessions(self) -> mpsc::Receiver<SapResult<SessionAnnouncement>> {
+        let mut buf = [0; 1024];
+
+        let (tx, rx) = mpsc::channel(10);
+
+        spawn(async move {
+            loop {
+                match self.socket.recv(&mut buf).await {
+                    Ok(len) => {
+                        if let Err(e) = tx.send(decode_sap(&buf[..len])).await {
+                            log::error!("Error forwarding SAP message error: {e}");
+                            break;
+                        }
+                    }
+                    Err(e) => {
+                        if let Err(e) = tx.send(Err(Error::IoError(e))).await {
+                            log::error!("Error forwarding SAP message error: {e}");
+                        }
+                        break;
+                    }
+                }
+            }
+        });
+
+        rx
     }
 
     pub async fn announce_session(&mut self, announcement: SessionAnnouncement) -> SapResult<()> {
