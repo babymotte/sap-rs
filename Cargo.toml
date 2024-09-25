@@ -24,6 +24,11 @@ tokio = { version = "1.40.0", features = [
     "time",
 ] }
 
+[dev-dependencies]
+miette = { version = "7.2.0", features = ["fancy"] }
+tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
+worterbuch-client = "0.45.2"
+
 [lints.rust]
 unsafe_code = "forbid"
 

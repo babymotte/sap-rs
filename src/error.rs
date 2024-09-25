@@ -17,6 +17,7 @@
 
 use std::{io, net::AddrParseError};
 use thiserror::Error;
+use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 
 #[derive(Error, Debug)]
 pub enum Error {
@@ -30,6 +31,17 @@ pub enum Error {
     SdpParseError(#[from] sdp::Error),
     #[error("not implemented: {0}")]
     NotImplemented(&'static str),
+    #[error("internal channel error: {0}")]
+    RecvError(#[from] RecvError),
+}
+
+impl<T> From<SendError<T>> for Error {
+    fn from(_: SendError<T>) -> Self {
+        Error::IoError(io::Error::new(
+            io::ErrorKind::Other,
+            "internal channel error",
+        ))
+    }
 }
 
 pub type SapResult<T> = Result<T, Error>;

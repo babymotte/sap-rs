@@ -21,11 +21,17 @@ use murmur3::murmur3_32;
 use sdp::SessionDescription;
 use socket2::{Domain, Protocol, SockAddr, Socket, Type};
 use std::{
+    collections::HashMap,
     io::Cursor,
     net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
-use tokio::{net::UdpSocket, select, spawn, sync::mpsc, time::interval};
+use tokio::{
+    net::UdpSocket,
+    select, spawn,
+    sync::{mpsc, oneshot},
+    time::interval,
+};
 
 pub mod error;
 
@@ -65,63 +71,96 @@ impl SessionAnnouncement {
             sdp,
         })
     }
-}
 
-pub struct Sap {
-    socket: UdpSocket,
-    multicast_addr: SocketAddr,
-    deletion_announcement: Option<SessionAnnouncement>,
-}
-
-impl Sap {
-    pub async fn new() -> SapResult<Self> {
-        let multicast_addr = SocketAddr::new(
-            IpAddr::V4(DEFAULT_MULTICAST_ADDRESS.parse()?),
-            DEFAULT_SAP_PORT,
-        );
-        let socket = create_socket().await?;
-
-        Ok(Sap {
-            socket,
-            multicast_addr,
-            deletion_announcement: None,
+    pub fn deletion(sdp: SessionDescription) -> SapResult<Self> {
+        Ok(Self {
+            deletion: true,
+            encrypted: false,
+            compressed: false,
+            msg_id_hash: sdp_hash(&sdp),
+            auth_data: None,
+            originating_source: sdp.origin.unicast_address.parse()?,
+            payload_type: Some(DEFAULT_PAYLOAD_TYPE.to_owned()),
+            sdp,
         })
     }
+}
 
-    pub async fn discover_sessions(self) -> mpsc::Receiver<SapResult<SessionAnnouncement>> {
+pub struct SapActor {
+    socket: UdpSocket,
+    multicast_addr: SocketAddr,
+    active_sessions: HashMap<u16, SessionAnnouncement>,
+    foreign_sessions: HashMap<u16, SessionAnnouncement>,
+    deletion_announcements: HashMap<u16, SessionAnnouncement>,
+    event_tx: mpsc::Sender<Event>,
+    msg_rx: mpsc::Receiver<Message>,
+}
+
+pub enum Event {
+    SessionFound(SessionAnnouncement),
+    SessionLost(SessionAnnouncement),
+}
+
+enum Message {
+    AnnounceSession(SessionAnnouncement, oneshot::Sender<SapResult<()>>),
+    DeleteSession(u16, oneshot::Sender<SapResult<()>>),
+}
+
+impl SapActor {
+    async fn run(mut self) {
         let mut buf = [0; 1024];
 
-        let (tx, rx) = mpsc::channel(10);
-
-        spawn(async move {
-            loop {
-                match self.socket.recv(&mut buf).await {
-                    Ok(len) => {
-                        let msg = decode_sap(&buf[..len]);
-                        if let Err(e) = tx.send(msg).await {
-                            log::error!("Error forwarding SAP message error: {e}");
-                            break;
-                        }
+        loop {
+            select! {
+                Some(msg) = self.msg_rx.recv() => {
+                    match msg {
+                        Message::AnnounceSession(sa, tx) => {
+                            tx.send(self.announce_session(sa).await).ok();
+                        },
+                        Message::DeleteSession(hash, tx) => {
+                            tx.send(self.delete_session(hash).await).ok();
+                        },
                     }
-                    Err(e) => {
-                        if let Err(e) = tx.send(Err(Error::IoError(e))).await {
-                            log::error!("Error forwarding SAP message error: {e}");
-                        }
-                        break;
-                    }
-                }
+                },
+                Ok(len) = async {
+                    log::debug!("receiving SAP broadcast message …");
+                    let recv = self.socket.recv(&mut buf).await;
+                    log::debug!("broadcast message received");
+                    recv
+                } => self.forward_announcement(&buf[0..len]).await,
+                else => break,
             }
-        });
-
-        rx
+        }
     }
 
-    pub async fn announce_session(&mut self, announcement: SessionAnnouncement) -> SapResult<()> {
-        self.delete_session().await?;
+    async fn forward_announcement(&self, buf: &[u8]) {
+        log::debug!("forwarding SAP message");
+        match decode_sap(buf) {
+            Ok(sap) => {
+                let event = if sap.deletion {
+                    Event::SessionLost(sap)
+                } else {
+                    Event::SessionFound(sap)
+                };
+                if let Err(e) = self.event_tx.send(event).await {
+                    log::error!("Error forwarding SAP message error: {e}");
+                } else {
+                    log::debug!("SAP message forwarded");
+                }
+            }
+            Err(e) => {
+                log::error!("error decoding SAP message: {e}");
+            }
+        }
+    }
+
+    async fn announce_session(&mut self, announcement: SessionAnnouncement) -> SapResult<()> {
+        self.delete_session(announcement.msg_id_hash).await?;
 
         let mut deletion_announcement = announcement.clone();
         deletion_announcement.deletion = true;
-        self.deletion_announcement = Some(deletion_announcement);
+        self.deletion_announcements
+            .insert(deletion_announcement.msg_id_hash, deletion_announcement);
 
         let mut interval = interval(Duration::from_secs(5));
 
@@ -135,9 +174,9 @@ impl Sap {
         }
     }
 
-    pub async fn delete_session(&mut self) -> SapResult<()> {
-        if let Some(deletion_announcement) = self.deletion_announcement.take() {
-            log::info!("Deleting active session.");
+    async fn delete_session(&mut self, hash: u16) -> SapResult<()> {
+        if let Some(deletion_announcement) = self.deletion_announcements.remove(&hash) {
+            log::info!("Deleting active session {hash}.");
             let msg = encode_sap(&deletion_announcement);
             self.socket.send_to(&msg, &self.multicast_addr).await?;
         } else {
@@ -152,6 +191,55 @@ impl Sap {
         let msg = encode_sap(announcement);
         self.socket.send_to(&msg, &self.multicast_addr).await?;
         Ok(())
+    }
+}
+
+#[derive(Clone)]
+pub struct Sap {
+    msg_tx: mpsc::Sender<Message>,
+}
+
+impl Sap {
+    pub async fn new() -> SapResult<(Self, mpsc::Receiver<Event>)> {
+        let multicast_addr = SocketAddr::new(
+            IpAddr::V4(DEFAULT_MULTICAST_ADDRESS.parse()?),
+            DEFAULT_SAP_PORT,
+        );
+        let socket = create_socket().await?;
+
+        let active_sessions = HashMap::new();
+        let foreign_sessions = HashMap::new();
+        let deletion_announcements = HashMap::new();
+
+        let (event_tx, event_rx) = mpsc::channel(1);
+        let (msg_tx, msg_rx) = mpsc::channel(100);
+
+        let actor = SapActor {
+            socket,
+            multicast_addr,
+            active_sessions,
+            foreign_sessions,
+            deletion_announcements,
+            event_tx,
+            msg_rx,
+        };
+
+        spawn(actor.run());
+
+        Ok((Sap { msg_tx }, event_rx))
+    }
+
+    pub async fn announce_session(&self, sd: SessionDescription) -> SapResult<()> {
+        let sa = SessionAnnouncement::new(sd)?;
+        let (tx, rx) = oneshot::channel();
+        self.msg_tx.send(Message::AnnounceSession(sa, tx)).await?;
+        rx.await?
+    }
+
+    pub async fn delete_session(&self, hash: u16) -> SapResult<()> {
+        let (tx, rx) = oneshot::channel();
+        self.msg_tx.send(Message::DeleteSession(hash, tx)).await?;
+        rx.await?
     }
 }
 
@@ -274,13 +362,18 @@ pub fn encode_sap(msg: &SessionAnnouncement) -> Vec<u8> {
         data.extend_from_slice(payload_type.as_bytes());
         data.push(b'\0');
     }
+    log::info!("marshalling sdp ...");
     data.extend_from_slice(msg.sdp.marshal().as_bytes());
+    log::info!("marshalling sdp done.");
 
     data
 }
 
 fn sdp_hash(sdp: &SessionDescription) -> u16 {
-    murmur3_32(&mut Cursor::new(sdp.marshal()), *HASH_SEED).unwrap_or(0) as u16
+    log::info!("computing message hash ...");
+    let res = murmur3_32(&mut Cursor::new(sdp.marshal()), *HASH_SEED).unwrap_or(0) as u16;
+    log::info!("computing message hash done");
+    res
 }
 
 async fn create_socket() -> SapResult<UdpSocket> {
@@ -295,9 +388,12 @@ async fn create_socket() -> SapResult<UdpSocket> {
     socket.bind(&SockAddr::from(local_addr))?;
     socket.join_multicast_v4(&multicast_addr, &local_ip)?;
 
-    let tokio_socket = UdpSocket::from_std(socket.into())?;
+    let socket = UdpSocket::from_std(socket.into())?;
 
-    Ok(tokio_socket)
+    // let socket = UdpSocket::bind(format!("0.0.0.0:{DEFAULT_SAP_PORT}")).await?;
+    // socket.join_multicast_v4(multicast_addr, local_ip)?;
+
+    Ok(socket)
 }
 
 #[cfg(test)]
