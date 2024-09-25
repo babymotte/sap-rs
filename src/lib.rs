@@ -291,6 +291,7 @@ async fn create_socket() -> SapResult<UdpSocket> {
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     socket.set_reuse_port(true)?;
+    socket.set_nonblocking(true)?;
     socket.bind(&SockAddr::from(local_addr))?;
     socket.join_multicast_v4(&multicast_addr, &local_ip)?;
 
