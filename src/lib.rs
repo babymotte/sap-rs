@@ -102,7 +102,7 @@ pub enum Event {
 }
 
 enum Message {
-    AnnounceSession(SessionAnnouncement, oneshot::Sender<SapResult<()>>),
+    AnnounceSession(Box<SessionAnnouncement>, oneshot::Sender<SapResult<()>>),
     DeleteSession(u16, oneshot::Sender<SapResult<()>>),
 }
 
@@ -115,7 +115,7 @@ impl SapActor {
                 Some(msg) = self.msg_rx.recv() => {
                     match msg {
                         Message::AnnounceSession(sa, tx) => {
-                            tx.send(self.announce_session(sa).await).ok();
+                            tx.send(self.announce_session(*sa).await).ok();
                         },
                         Message::DeleteSession(hash, tx) => {
                             tx.send(self.delete_session(hash).await).ok();
@@ -232,7 +232,9 @@ impl Sap {
     pub async fn announce_session(&self, sd: SessionDescription) -> SapResult<()> {
         let sa = SessionAnnouncement::new(sd)?;
         let (tx, rx) = oneshot::channel();
-        self.msg_tx.send(Message::AnnounceSession(sa, tx)).await?;
+        self.msg_tx
+            .send(Message::AnnounceSession(Box::new(sa), tx))
+            .await?;
         rx.await?
     }
 
@@ -343,11 +345,7 @@ pub fn encode_sap(msg: &SessionAnnouncement) -> Vec<u8> {
     let e = if msg.encrypted { 1u8 } else { 0u8 };
     let c = if msg.compressed { 1u8 } else { 0u8 };
     let header = v << 5 | a << 4 | r << 3 | t << 2 | e << 1 | c;
-    let auth_len = msg
-        .auth_data
-        .as_ref()
-        .map(|d| d.as_bytes().len())
-        .unwrap_or(0) as u8;
+    let auth_len = msg.auth_data.as_ref().map(|d| d.len()).unwrap_or(0) as u8;
     let msg_id_hash = msg.msg_id_hash.to_be_bytes();
 
     let mut data = Vec::new();

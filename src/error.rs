@@ -37,8 +37,7 @@ pub enum Error {
 
 impl<T> From<SendError<T>> for Error {
     fn from(_: SendError<T>) -> Self {
-        Error::IoError(io::Error::new(
-            io::ErrorKind::Other,
+        Error::IoError(io::Error::other(
             "internal channel error",
         ))
     }
