@@ -1,7 +1,7 @@
 use miette::{IntoDiagnostic, Result};
 use sap_rs::{Event, Sap};
 use std::io;
-use tokio::{select, sync::oneshot};
+use tokio::select;
 use tracing_subscriber::EnvFilter;
 use worterbuch_client::{connect_with_default_config, topic};
 
@@ -12,13 +12,7 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
-    let (wb_disco_tx, mut wb_disco_rx) = oneshot::channel();
-    let on_disconnect = async move {
-        wb_disco_tx.send(()).ok();
-    };
-    let (wb, _) = connect_with_default_config(on_disconnect)
-        .await
-        .into_diagnostic()?;
+    let (wb, mut on_wb_disconnect, _) = connect_with_default_config().await.into_diagnostic()?;
 
     wb.set_client_name("SAP browser").await.ok();
     wb.set_grave_goods(&["discovery/sap/#"])
@@ -29,7 +23,7 @@ async fn main() -> Result<()> {
 
     loop {
         select! {
-            _ = &mut wb_disco_rx => {
+            _ = &mut on_wb_disconnect => {
                 log::warn!("wb connection closed");
                 break
             },

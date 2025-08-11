@@ -383,15 +383,11 @@ async fn create_socket() -> SapResult<UdpSocket> {
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
-    socket.set_reuse_port(true)?;
     socket.set_nonblocking(true)?;
     socket.bind(&SockAddr::from(local_addr))?;
     socket.join_multicast_v4(&multicast_addr, &local_ip)?;
 
     let socket = UdpSocket::from_std(socket.into())?;
-
-    // let socket = UdpSocket::bind(format!("0.0.0.0:{DEFAULT_SAP_PORT}")).await?;
-    // socket.join_multicast_v4(multicast_addr, local_ip)?;
 
     Ok(socket)
 }
