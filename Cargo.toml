@@ -1,6 +1,6 @@
 [package]
 name = "sap-rs"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["Michael Bachmann <mbachmann@bbmsoft.net>"]
 description = "A pure Rust implementation of the Session Announcement Protocol"
@@ -11,23 +11,23 @@ categories = ["multimedia", "network-programming"]
 
 [dependencies]
 lazy_static = "1.5.0"
-log = "0.4.22"
 murmur3 = "0.5.2"
-sdp = "0.8.0"
-socket2 = "0.6.0"
-thiserror = "2.0.12"
-tokio = { version = "1.47.1", features = [
+sdp = "0.10.0"
+socket2 = "0.6.1"
+thiserror = "2.0.17"
+tokio = { version = "1.48.0", features = [
     "macros",
     "net",
     "rt",
     "sync",
     "time",
 ] }
+tracing = "0.1.41"
 
 [dev-dependencies]
 miette = { version = "7.2.0", features = ["fancy"] }
-tracing-subscriber = { version = "0.3.18", features = ["env-filter"] }
-worterbuch-client = "1.3.6"
+tracing-subscriber = { version = "0.3.20", features = ["env-filter"] }
+worterbuch-client = "1.3.8"
 
 [lints.rust]
 unsafe_code = "forbid"

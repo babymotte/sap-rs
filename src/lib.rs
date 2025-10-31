@@ -32,6 +32,7 @@ use tokio::{
     sync::{mpsc, oneshot},
     time::interval,
 };
+use tracing::{debug, error, info};
 
 pub mod error;
 
@@ -123,9 +124,9 @@ impl SapActor {
                     }
                 },
                 Ok(len) = async {
-                    log::debug!("receiving SAP broadcast message …");
+                    debug!("receiving SAP broadcast message …");
                     let recv = self.socket.recv(&mut buf).await;
-                    log::debug!("broadcast message received");
+                    debug!("broadcast message received");
                     recv
                 } => self.forward_announcement(&buf[0..len]).await,
                 else => break,
@@ -134,7 +135,7 @@ impl SapActor {
     }
 
     async fn forward_announcement(&self, buf: &[u8]) {
-        log::debug!("forwarding SAP message");
+        debug!("forwarding SAP message");
         match decode_sap(buf) {
             Ok(sap) => {
                 let event = if sap.deletion {
@@ -143,13 +144,13 @@ impl SapActor {
                     Event::SessionFound(sap)
                 };
                 if let Err(e) = self.event_tx.send(event).await {
-                    log::error!("Error forwarding SAP message error: {e}");
+                    error!("Error forwarding SAP message error: {e}");
                 } else {
-                    log::debug!("SAP message forwarded");
+                    debug!("SAP message forwarded");
                 }
             }
             Err(e) => {
-                log::error!("error decoding SAP message: {e}");
+                error!("error decoding SAP message: {e}");
             }
         }
     }
@@ -176,18 +177,18 @@ impl SapActor {
 
     async fn delete_session(&mut self, hash: u16) -> SapResult<()> {
         if let Some(deletion_announcement) = self.deletion_announcements.remove(&hash) {
-            log::info!("Deleting active session {hash}.");
+            info!("Deleting active session {hash}.");
             let msg = encode_sap(&deletion_announcement);
             self.socket.send_to(&msg, &self.multicast_addr).await?;
         } else {
-            log::debug!("No session active, nothing to delete.");
+            debug!("No session active, nothing to delete.");
         }
 
         Ok(())
     }
 
     async fn send_announcement(&self, announcement: &SessionAnnouncement) -> SapResult<()> {
-        log::info!("Broadcasting session description.");
+        info!("Broadcasting session description.");
         let msg = encode_sap(announcement);
         self.socket.send_to(&msg, &self.multicast_addr).await?;
         Ok(())
@@ -360,17 +361,17 @@ pub fn encode_sap(msg: &SessionAnnouncement) -> Vec<u8> {
         data.extend_from_slice(payload_type.as_bytes());
         data.push(b'\0');
     }
-    log::info!("marshalling sdp ...");
+    info!("marshalling sdp ...");
     data.extend_from_slice(msg.sdp.marshal().as_bytes());
-    log::info!("marshalling sdp done.");
+    info!("marshalling sdp done.");
 
     data
 }
 
 fn sdp_hash(sdp: &SessionDescription) -> u16 {
-    log::info!("computing message hash ...");
+    info!("computing message hash ...");
     let res = murmur3_32(&mut Cursor::new(sdp.marshal()), *HASH_SEED).unwrap_or(0) as u16;
-    log::info!("computing message hash done");
+    info!("computing message hash done");
     res
 }
 
