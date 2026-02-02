@@ -1,7 +1,8 @@
 use miette::{IntoDiagnostic, Result};
 use sap_rs::{Event, Sap};
-use std::io;
+use std::{io, time::Duration};
 use tokio::select;
+use tosub::SubsystemHandle;
 use tracing::{debug, warn};
 use tracing_subscriber::EnvFilter;
 use worterbuch_client::{connect_with_default_config, topic};
@@ -13,6 +14,16 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
+    tosub::build_root("sap-browser")
+        .catch_signals()
+        .with_timeout(Duration::from_secs(1))
+        .start(run)
+        .await?;
+
+    Ok(())
+}
+
+async fn run(subsys: SubsystemHandle) -> Result<()> {
     let (wb, mut on_wb_disconnect, _) = connect_with_default_config().await.into_diagnostic()?;
 
     wb.set_client_name("SAP browser").await.ok();
@@ -20,7 +31,7 @@ async fn main() -> Result<()> {
         .await
         .into_diagnostic()?;
 
-    let (_, mut events) = Sap::new().await.into_diagnostic()?;
+    let (_, mut events) = Sap::new(&subsys).await.into_diagnostic()?;
 
     loop {
         select! {
@@ -45,7 +56,8 @@ async fn main() -> Result<()> {
                     }
                 },
                 None => break,
-            }
+            },
+            _ = subsys.shutdown_requested() => break,
         }
     }
 

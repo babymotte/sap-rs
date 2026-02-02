@@ -15,11 +15,12 @@
  *  along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
+use miette::Diagnostic;
 use std::{io, net::AddrParseError};
 use thiserror::Error;
 use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Diagnostic)]
 pub enum Error {
     #[error("network io error: {0}")]
     IoError(#[from] io::Error),
@@ -37,9 +38,7 @@ pub enum Error {
 
 impl<T> From<SendError<T>> for Error {
     fn from(_: SendError<T>) -> Self {
-        Error::IoError(io::Error::other(
-            "internal channel error",
-        ))
+        Error::IoError(io::Error::other("internal channel error"))
     }
 }
 

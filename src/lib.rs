@@ -28,10 +28,11 @@ use std::{
 };
 use tokio::{
     net::UdpSocket,
-    select, spawn,
+    select,
     sync::{mpsc, oneshot},
     time::interval,
 };
+use tosub::SubsystemHandle;
 use tracing::{debug, error, info};
 
 pub mod error;
@@ -88,13 +89,15 @@ impl SessionAnnouncement {
 }
 
 pub struct SapActor {
+    subsys: SubsystemHandle,
     socket: UdpSocket,
     multicast_addr: SocketAddr,
-    active_sessions: HashMap<u16, SessionAnnouncement>,
-    foreign_sessions: HashMap<u16, SessionAnnouncement>,
-    deletion_announcements: HashMap<u16, SessionAnnouncement>,
+    active_sessions: HashMap<u64, SessionAnnouncement>,
+    foreign_sessions: HashMap<u64, SessionAnnouncement>,
+    deletion_announcements: HashMap<u64, (SessionAnnouncement, SubsystemHandle)>,
     event_tx: mpsc::Sender<Event>,
     msg_rx: mpsc::Receiver<Message>,
+    announcement_sender: mpsc::Sender<SessionAnnouncement>,
 }
 
 pub enum Event {
@@ -104,34 +107,37 @@ pub enum Event {
 
 enum Message {
     AnnounceSession(Box<SessionAnnouncement>, oneshot::Sender<SapResult<()>>),
-    DeleteSession(u16, oneshot::Sender<SapResult<()>>),
+    DeleteSession(u64, oneshot::Sender<SapResult<()>>),
 }
 
 impl SapActor {
-    async fn run(mut self) {
+    async fn run(mut self, mut announce_rx: mpsc::Receiver<SessionAnnouncement>) -> SapResult<()> {
         let mut buf = [0; 1024];
 
         loop {
             select! {
-                Some(msg) = self.msg_rx.recv() => {
-                    match msg {
-                        Message::AnnounceSession(sa, tx) => {
-                            tx.send(self.announce_session(*sa).await).ok();
-                        },
-                        Message::DeleteSession(hash, tx) => {
-                            tx.send(self.delete_session(hash).await).ok();
-                        },
-                    }
-                },
-                Ok(len) = async {
-                    debug!("receiving SAP broadcast message …");
-                    let recv = self.socket.recv(&mut buf).await;
-                    debug!("broadcast message received");
-                    recv
-                } => self.forward_announcement(&buf[0..len]).await,
+                Some(msg) = self.msg_rx.recv() => self.process_api_msg(msg).await?,
+                Ok(len) = self.socket.recv(&mut buf) => self.forward_announcement(&buf[0..len]).await,
+                Some(announcement) = announce_rx.recv() => self.send_announcement(&announcement).await?,
+                _ = self.subsys.shutdown_requested() => break,
                 else => break,
             }
         }
+
+        Ok(())
+    }
+
+    async fn process_api_msg(&mut self, msg: Message) -> SapResult<()> {
+        match msg {
+            Message::AnnounceSession(sa, tx) => {
+                tx.send(self.announce_session(*sa).await).ok();
+            }
+            Message::DeleteSession(id, tx) => {
+                tx.send(self.delete_session(id).await).ok();
+            }
+        }
+
+        Ok(())
     }
 
     async fn forward_announcement(&self, buf: &[u8]) {
@@ -156,28 +162,52 @@ impl SapActor {
     }
 
     async fn announce_session(&mut self, announcement: SessionAnnouncement) -> SapResult<()> {
-        self.delete_session(announcement.msg_id_hash).await?;
+        info!(
+            "Announcing new session with hash {}.",
+            announcement.msg_id_hash
+        );
+
+        self.delete_session(announcement.sdp.origin.session_id)
+            .await?;
 
         let mut deletion_announcement = announcement.clone();
         deletion_announcement.deletion = true;
-        self.deletion_announcements
-            .insert(deletion_announcement.msg_id_hash, deletion_announcement);
 
-        let mut interval = interval(Duration::from_secs(5));
+        let tx = self.announcement_sender.clone();
 
-        loop {
-            // TODO receive other announcements and update delay
-            // TODO send announcement in according intervals
-            //
-            select! {
-                _ = interval.tick() => self.send_announcement(&announcement).await?,
-            }
-        }
+        let announcement = self.subsys.spawn(
+            format!("announcement/{}", announcement.msg_id_hash),
+            |s| async move {
+                let mut interval = interval(Duration::from_secs(5));
+
+                loop {
+                    // TODO receive other announcements and update delay
+                    // TODO send announcement in according intervals
+                    //
+                    select! {
+                        _ = interval.tick() => tx.send(announcement.clone()).await?,
+                        _ = s.shutdown_requested() => break,
+                    }
+                }
+
+                Ok::<(), error::Error>(())
+            },
+        );
+
+        self.deletion_announcements.insert(
+            deletion_announcement.sdp.origin.session_id,
+            (deletion_announcement, announcement),
+        );
+
+        Ok(())
     }
 
-    async fn delete_session(&mut self, hash: u16) -> SapResult<()> {
-        if let Some(deletion_announcement) = self.deletion_announcements.remove(&hash) {
-            info!("Deleting active session {hash}.");
+    async fn delete_session(&mut self, session_id: u64) -> SapResult<()> {
+        if let Some((deletion_announcement, subsys)) =
+            self.deletion_announcements.remove(&session_id)
+        {
+            info!("Deleting active session {session_id}.");
+            subsys.request_local_shutdown();
             let msg = encode_sap(&deletion_announcement);
             self.socket.send_to(&msg, &self.multicast_addr).await?;
         } else {
@@ -188,7 +218,10 @@ impl SapActor {
     }
 
     async fn send_announcement(&self, announcement: &SessionAnnouncement) -> SapResult<()> {
-        info!("Broadcasting session description.");
+        debug!(
+            "Broadcasting session description:\n{}\n",
+            announcement.sdp.marshal()
+        );
         let msg = encode_sap(announcement);
         self.socket.send_to(&msg, &self.multicast_addr).await?;
         Ok(())
@@ -201,7 +234,7 @@ pub struct Sap {
 }
 
 impl Sap {
-    pub async fn new() -> SapResult<(Self, mpsc::Receiver<Event>)> {
+    pub async fn new(subsys: &SubsystemHandle) -> SapResult<(Self, mpsc::Receiver<Event>)> {
         let multicast_addr = SocketAddr::new(
             IpAddr::V4(DEFAULT_MULTICAST_ADDRESS.parse()?),
             DEFAULT_SAP_PORT,
@@ -215,17 +248,22 @@ impl Sap {
         let (event_tx, event_rx) = mpsc::channel(1);
         let (msg_tx, msg_rx) = mpsc::channel(100);
 
-        let actor = SapActor {
-            socket,
-            multicast_addr,
-            active_sessions,
-            foreign_sessions,
-            deletion_announcements,
-            event_tx,
-            msg_rx,
-        };
-
-        spawn(actor.run());
+        subsys.spawn("sap", move |s| async move {
+            let (announce_tx, announce_rx) = mpsc::channel(1);
+            SapActor {
+                subsys: s,
+                socket,
+                multicast_addr,
+                active_sessions,
+                foreign_sessions,
+                deletion_announcements,
+                event_tx,
+                msg_rx,
+                announcement_sender: announce_tx,
+            }
+            .run(announce_rx)
+            .await
+        });
 
         Ok((Sap { msg_tx }, event_rx))
     }
@@ -239,9 +277,11 @@ impl Sap {
         rx.await?
     }
 
-    pub async fn delete_session(&self, hash: u16) -> SapResult<()> {
+    pub async fn delete_session(&self, session_id: u64) -> SapResult<()> {
         let (tx, rx) = oneshot::channel();
-        self.msg_tx.send(Message::DeleteSession(hash, tx)).await?;
+        self.msg_tx
+            .send(Message::DeleteSession(session_id, tx))
+            .await?;
         rx.await?
     }
 }
@@ -361,9 +401,9 @@ pub fn encode_sap(msg: &SessionAnnouncement) -> Vec<u8> {
         data.extend_from_slice(payload_type.as_bytes());
         data.push(b'\0');
     }
-    info!("marshalling sdp ...");
+    debug!("marshalling sdp ...");
     data.extend_from_slice(msg.sdp.marshal().as_bytes());
-    info!("marshalling sdp done.");
+    debug!("marshalling sdp done.");
 
     data
 }
