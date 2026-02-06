@@ -1,6 +1,6 @@
 [package]
 name = "sap-rs"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2021"
 authors = ["Michael Bachmann <mbachmann@bbmsoft.net>"]
 description = "A pure Rust implementation of the Session Announcement Protocol"
@@ -23,7 +23,7 @@ tokio = { version = "1.48.0", features = [
     "sync",
     "time",
 ] }
-tosub = "1.0.0-rc.1"
+tosub = "1.0.0"
 tracing = "0.1.41"
 
 [dev-dependencies]
