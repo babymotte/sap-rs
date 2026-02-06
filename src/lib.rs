@@ -108,6 +108,7 @@ pub enum Event {
 enum Message {
     AnnounceSession(Box<SessionAnnouncement>, oneshot::Sender<SapResult<()>>),
     DeleteSession(u64, oneshot::Sender<SapResult<()>>),
+    DeleteAllSessions(oneshot::Sender<SapResult<()>>),
 }
 
 impl SapActor {
@@ -134,6 +135,9 @@ impl SapActor {
             }
             Message::DeleteSession(id, tx) => {
                 tx.send(self.delete_session(id).await).ok();
+            }
+            Message::DeleteAllSessions(tx) => {
+                tx.send(self.delete_all_sessions().await).ok();
             }
         }
 
@@ -206,14 +210,36 @@ impl SapActor {
         if let Some((deletion_announcement, subsys)) =
             self.deletion_announcements.remove(&session_id)
         {
-            info!("Deleting active session {session_id}.");
-            subsys.request_local_shutdown();
-            let msg = encode_sap(&deletion_announcement);
-            self.socket.send_to(&msg, &self.multicast_addr).await?;
+            self.revoke_announcement(session_id, deletion_announcement, subsys)
+                .await?;
         } else {
             debug!("No session active, nothing to delete.");
         }
 
+        Ok(())
+    }
+
+    async fn delete_all_sessions(&mut self) -> SapResult<()> {
+        let sessions = self.deletion_announcements.drain().collect::<Vec<_>>();
+
+        for (session_id, (deletion_announcement, subsys)) in sessions {
+            self.revoke_announcement(session_id, deletion_announcement, subsys)
+                .await?;
+        }
+
+        Ok(())
+    }
+
+    async fn revoke_announcement(
+        &mut self,
+        session_id: u64,
+        deletion_announcement: SessionAnnouncement,
+        subsys: SubsystemHandle,
+    ) -> SapResult<()> {
+        info!("Deleting active session {session_id}.");
+        subsys.request_local_shutdown();
+        let msg = encode_sap(&deletion_announcement);
+        self.socket.send_to(&msg, &self.multicast_addr).await?;
         Ok(())
     }
 
@@ -282,6 +308,12 @@ impl Sap {
         self.msg_tx
             .send(Message::DeleteSession(session_id, tx))
             .await?;
+        rx.await?
+    }
+
+    pub async fn delete_all_sessions(&self) -> SapResult<()> {
+        let (tx, rx) = oneshot::channel();
+        self.msg_tx.send(Message::DeleteAllSessions(tx)).await?;
         rx.await?
     }
 }
