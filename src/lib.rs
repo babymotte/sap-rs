@@ -90,11 +90,11 @@ impl SessionAnnouncement {
 
 pub struct SapActor {
     subsys: SubsystemHandle,
-    socket: UdpSocket,
+    rx: mpsc::Receiver<Vec<u8>>,
     multicast_addr: SocketAddr,
     active_sessions: HashMap<u64, SessionAnnouncement>,
     foreign_sessions: HashMap<u64, SessionAnnouncement>,
-    deletion_announcements: HashMap<u64, (SessionAnnouncement, SubsystemHandle)>,
+    deletion_announcements: HashMap<u64, SubsystemHandle>,
     event_tx: mpsc::Sender<Event>,
     msg_rx: mpsc::Receiver<Message>,
     announcement_sender: mpsc::Sender<SessionAnnouncement>,
@@ -112,18 +112,29 @@ enum Message {
 }
 
 impl SapActor {
-    async fn run(mut self, mut announce_rx: mpsc::Receiver<SessionAnnouncement>) -> SapResult<()> {
-        let mut buf = [0; 1024];
-
+    async fn run(mut self) -> SapResult<()> {
         loop {
             select! {
-                Some(msg) = self.msg_rx.recv() => self.process_api_msg(msg).await?,
-                Ok(len) = self.socket.recv(&mut buf) => self.forward_announcement(&buf[0..len]).await,
-                Some(announcement) = announce_rx.recv() => self.send_announcement(&announcement).await?,
-                _ = self.subsys.shutdown_requested() => break,
-                else => break,
+                recv = self.msg_rx.recv() => if let Some(msg) = recv {
+                    self.process_api_msg(msg).await?;
+                } else {
+                    info!("Message channel closed, shutting down SAP actor.");
+                    break;
+                },
+                recv = self.rx.recv() => if let Some(data) = recv {
+                    self.forward_announcement(&data).await;
+                } else {
+                    info!("Socket channel closed, shutting down SAP actor.");
+                    break;
+                },
+                _ = self.subsys.shutdown_requested() => {
+                    info!("Shutdown requested, shutting down SAP actor.");
+                    break;
+                },
             }
         }
+
+        info!("SAP actor stopped.");
 
         Ok(())
     }
@@ -166,6 +177,8 @@ impl SapActor {
     }
 
     async fn announce_session(&mut self, announcement: SessionAnnouncement) -> SapResult<()> {
+        let session_id = announcement.sdp.origin.session_id;
+
         info!(
             "Announcing new session with hash {}.",
             announcement.msg_id_hash
@@ -194,24 +207,21 @@ impl SapActor {
                     }
                 }
 
+                tx.send(deletion_announcement).await.ok();
+
                 Ok::<(), error::Error>(())
             },
         );
 
-        self.deletion_announcements.insert(
-            deletion_announcement.sdp.origin.session_id,
-            (deletion_announcement, announcement),
-        );
+        self.deletion_announcements.insert(session_id, announcement);
 
         Ok(())
     }
 
     async fn delete_session(&mut self, session_id: u64) -> SapResult<()> {
-        if let Some((deletion_announcement, subsys)) =
-            self.deletion_announcements.remove(&session_id)
-        {
-            self.revoke_announcement(session_id, deletion_announcement, subsys)
-                .await?;
+        if let Some(subsys) = self.deletion_announcements.remove(&session_id) {
+            info!("Deleting active session {session_id}.");
+            subsys.request_local_shutdown();
         } else {
             debug!("No session active, nothing to delete.");
         }
@@ -222,36 +232,27 @@ impl SapActor {
     async fn delete_all_sessions(&mut self) -> SapResult<()> {
         let sessions = self.deletion_announcements.drain().collect::<Vec<_>>();
 
-        for (session_id, (deletion_announcement, subsys)) in sessions {
-            self.revoke_announcement(session_id, deletion_announcement, subsys)
-                .await?;
+        for (session_id, subsys) in sessions {
+            info!("Deleting active session {session_id}.");
+            subsys.request_local_shutdown();
         }
 
         Ok(())
     }
+}
 
-    async fn revoke_announcement(
-        &mut self,
-        session_id: u64,
-        deletion_announcement: SessionAnnouncement,
-        subsys: SubsystemHandle,
-    ) -> SapResult<()> {
-        info!("Deleting active session {session_id}.");
-        subsys.request_local_shutdown();
-        let msg = encode_sap(&deletion_announcement);
-        self.socket.send_to(&msg, &self.multicast_addr).await?;
-        Ok(())
-    }
-
-    async fn send_announcement(&self, announcement: &SessionAnnouncement) -> SapResult<()> {
-        debug!(
-            "Broadcasting session description:\n{}\n",
-            announcement.sdp.marshal()
-        );
-        let msg = encode_sap(announcement);
-        self.socket.send_to(&msg, &self.multicast_addr).await?;
-        Ok(())
-    }
+async fn send_announcement(
+    socket: &UdpSocket,
+    multicast_addr: &SocketAddr,
+    announcement: &SessionAnnouncement,
+) -> SapResult<()> {
+    debug!(
+        "Broadcasting session description:\n{}\n",
+        announcement.sdp.marshal()
+    );
+    let msg = encode_sap(announcement);
+    socket.send_to(&msg, multicast_addr).await?;
+    Ok(())
 }
 
 #[derive(Clone)]
@@ -273,12 +274,24 @@ impl Sap {
 
         let (event_tx, event_rx) = mpsc::channel(1);
         let (msg_tx, msg_rx) = mpsc::channel(100);
+        let (socket_tx, socket_rx) = mpsc::channel(100);
 
-        subsys.spawn("sap", move |s| async move {
+        subsys.spawn("sap", move |s| {
             let (announce_tx, announce_rx) = mpsc::channel(1);
+
+            s.spawn("socket", move |s| {
+                IoLoop {
+                    s,
+                    socket,
+                    multicast_addr,
+                    socket_tx,
+                    announce_rx,
+                }
+                .io_loop()
+            });
+
             SapActor {
                 subsys: s,
-                socket,
                 multicast_addr,
                 active_sessions,
                 foreign_sessions,
@@ -286,9 +299,9 @@ impl Sap {
                 event_tx,
                 msg_rx,
                 announcement_sender: announce_tx,
+                rx: socket_rx,
             }
-            .run(announce_rx)
-            .await
+            .run()
         });
 
         Ok((Sap { msg_tx }, event_rx))
@@ -315,6 +328,36 @@ impl Sap {
         let (tx, rx) = oneshot::channel();
         self.msg_tx.send(Message::DeleteAllSessions(tx)).await?;
         rx.await?
+    }
+}
+
+struct IoLoop {
+    s: SubsystemHandle,
+    socket: UdpSocket,
+    multicast_addr: SocketAddr,
+    socket_tx: mpsc::Sender<Vec<u8>>,
+    announce_rx: mpsc::Receiver<SessionAnnouncement>,
+}
+impl IoLoop {
+    async fn io_loop(mut self) -> SapResult<()> {
+        let mut buf = [0; 1024];
+
+        loop {
+            select! {
+                len = self.socket.recv(&mut buf) => self.socket_tx.send(buf[..len?].to_vec()).await?,
+                recv = self.announce_rx.recv() => if let Some(announcement) = recv {
+                    send_announcement(&self.socket, &self.multicast_addr, &announcement).await?
+                } else {
+                    break;
+                },
+            }
+        }
+
+        self.s.request_local_shutdown();
+
+        info!("SAP socket closed.");
+
+        Ok(())
     }
 }
 

@@ -31,7 +31,7 @@ async fn run(subsys: SubsystemHandle) -> Result<()> {
         .await
         .into_diagnostic()?;
 
-    let (_, mut events) = Sap::new(&subsys).await.into_diagnostic()?;
+    let (_sap, mut events) = Sap::new(&subsys).await.into_diagnostic()?;
 
     loop {
         select! {
