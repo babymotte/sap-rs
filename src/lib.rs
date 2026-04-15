@@ -488,15 +488,14 @@ fn sdp_hash(sdp: &SessionDescription) -> u16 {
 
 fn get_iface_ipv4(iface_name: &str) -> Option<Ipv4Addr> {
     for iface in if_addrs::get_if_addrs().ok()? {
-        if iface.name == iface_name {
-            if let IpAddr::V4(addr) = iface.addr.ip()
+        if iface.name == iface_name
+            && let IpAddr::V4(addr) = iface.addr.ip()
                 && !addr.is_loopback()
                 && !addr.is_link_local()
                 && !addr.is_broadcast()
             {
                 return Some(addr);
             }
-        }
     }
     None
 }
