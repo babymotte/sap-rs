@@ -33,7 +33,7 @@ use tokio::{
     time::interval,
 };
 use tosub::SubsystemHandle;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, trace};
 
 pub mod error;
 
@@ -153,7 +153,7 @@ impl SapActor {
     }
 
     async fn forward_announcement(&self, buf: &[u8]) {
-        debug!("forwarding SAP message");
+        trace!("forwarding SAP message");
         match decode_sap(buf) {
             Ok(sap) => {
                 let event = if sap.deletion {
@@ -164,7 +164,7 @@ impl SapActor {
                 if let Err(e) = self.event_tx.send(event).await {
                     error!("Error forwarding SAP message error: {e}");
                 } else {
-                    debug!("SAP message forwarded");
+                    trace!("SAP message forwarded");
                 }
             }
             Err(e) => {
@@ -244,7 +244,8 @@ async fn send_announcement(
     announcement: &SessionAnnouncement,
 ) -> SapResult<()> {
     debug!(
-        "Broadcasting session description:\n{}\n",
+        "Broadcasting session description to {}:\n{}\n",
+        multicast_addr,
         announcement.sdp.marshal()
     );
     let msg = encode_sap(announcement);
@@ -472,9 +473,7 @@ pub fn encode_sap(msg: &SessionAnnouncement) -> Vec<u8> {
         data.extend_from_slice(payload_type.as_bytes());
         data.push(b'\0');
     }
-    debug!("marshalling sdp ...");
     data.extend_from_slice(msg.sdp.marshal().as_bytes());
-    debug!("marshalling sdp done.");
 
     data
 }
@@ -490,12 +489,12 @@ fn get_iface_ipv4(iface_name: &str) -> Option<Ipv4Addr> {
     for iface in if_addrs::get_if_addrs().ok()? {
         if iface.name == iface_name
             && let IpAddr::V4(addr) = iface.addr.ip()
-                && !addr.is_loopback()
-                && !addr.is_link_local()
-                && !addr.is_broadcast()
-            {
-                return Some(addr);
-            }
+            && !addr.is_loopback()
+            && !addr.is_link_local()
+            && !addr.is_broadcast()
+        {
+            return Some(addr);
+        }
     }
     None
 }
@@ -511,6 +510,12 @@ async fn create_socket(iface_name: String) -> SapResult<UdpSocket> {
     socket.set_nonblocking(true)?;
     socket.bind(&SockAddr::from(local_addr))?;
     socket.join_multicast_v4(&multicast_addr, &iface_ip)?;
+    socket.set_multicast_if_v4(&iface_ip)?;
+
+    info!(
+        "SAP socket joined multicast group {} on interface {} with IP {}.",
+        multicast_addr, iface_name, iface_ip
+    );
 
     let socket = UdpSocket::from_std(socket.into())?;
 

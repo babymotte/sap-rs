@@ -1,6 +1,6 @@
 [package]
 name = "sap-rs"
-version = "0.8.0"
+version = "0.9.0"
 edition = "2024"
 authors = ["Michael Bachmann <mbachmann@bbmsoft.net>"]
 description = "A pure Rust implementation of the Session Announcement Protocol"
@@ -29,6 +29,7 @@ tracing = "0.1.41"
 
 [dev-dependencies]
 miette = { version = "7.2.0", features = ["fancy"] }
+tokio = { version = "1.52.0", features = ["fs"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 worterbuch-client = "1.5.0-alpha.3"
 
