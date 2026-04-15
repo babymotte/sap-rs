@@ -34,6 +34,8 @@ pub enum Error {
     NotImplemented(&'static str),
     #[error("internal channel error: {0}")]
     RecvError(#[from] RecvError),
+    #[error("no IP address found for interface: {0}")]
+    NoIpAddress(String),
 }
 
 impl<T> From<SendError<T>> for Error {

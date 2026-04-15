@@ -39,7 +39,7 @@ pub mod error;
 
 const DEFAULT_PAYLOAD_TYPE: &str = "application/sdp";
 const DEFAULT_SAP_PORT: u16 = 9875;
-const DEFAULT_MULTICAST_ADDRESS: &str = "239.255.255.255";
+const DEFAULT_MULTICAST_ADDRESS: [u8; 4] = [239, 255, 255, 255];
 
 lazy_static! {
     static ref HASH_SEED: u32 = SystemTime::now()
@@ -91,9 +91,6 @@ impl SessionAnnouncement {
 pub struct SapActor {
     subsys: SubsystemHandle,
     rx: mpsc::Receiver<Vec<u8>>,
-    multicast_addr: SocketAddr,
-    active_sessions: HashMap<u64, SessionAnnouncement>,
-    foreign_sessions: HashMap<u64, SessionAnnouncement>,
     deletion_announcements: HashMap<u64, SubsystemHandle>,
     event_tx: mpsc::Sender<Event>,
     msg_rx: mpsc::Receiver<Message>,
@@ -261,15 +258,12 @@ pub struct Sap {
 }
 
 impl Sap {
-    pub async fn new(subsys: &SubsystemHandle) -> SapResult<(Self, mpsc::Receiver<Event>)> {
-        let multicast_addr = SocketAddr::new(
-            IpAddr::V4(DEFAULT_MULTICAST_ADDRESS.parse()?),
-            DEFAULT_SAP_PORT,
-        );
-        let socket = create_socket().await?;
+    pub async fn new(
+        subsys: &SubsystemHandle,
+        iface_name: String,
+    ) -> SapResult<(Self, mpsc::Receiver<Event>)> {
+        let socket = create_socket(iface_name).await?;
 
-        let active_sessions = HashMap::new();
-        let foreign_sessions = HashMap::new();
         let deletion_announcements = HashMap::new();
 
         let (event_tx, event_rx) = mpsc::channel(1);
@@ -277,6 +271,11 @@ impl Sap {
         let (socket_tx, socket_rx) = mpsc::channel(100);
 
         subsys.spawn("sap", move |s| {
+            let multicast_addr = SocketAddr::new(
+                IpAddr::V4(Ipv4Addr::from(DEFAULT_MULTICAST_ADDRESS)),
+                DEFAULT_SAP_PORT,
+            );
+
             let (announce_tx, announce_rx) = mpsc::channel(1);
 
             s.spawn("socket", move |s| {
@@ -292,9 +291,6 @@ impl Sap {
 
             SapActor {
                 subsys: s,
-                multicast_addr,
-                active_sessions,
-                foreign_sessions,
                 deletion_announcements,
                 event_tx,
                 msg_rx,
@@ -490,16 +486,32 @@ fn sdp_hash(sdp: &SessionDescription) -> u16 {
     res
 }
 
-async fn create_socket() -> SapResult<UdpSocket> {
-    let multicast_addr: Ipv4Addr = DEFAULT_MULTICAST_ADDRESS.parse()?;
-    let local_ip = Ipv4Addr::UNSPECIFIED;
-    let local_addr = SocketAddr::new(IpAddr::V4(local_ip), DEFAULT_SAP_PORT);
+fn get_iface_ipv4(iface_name: &str) -> Option<Ipv4Addr> {
+    for iface in if_addrs::get_if_addrs().ok()? {
+        if iface.name == iface_name {
+            if let IpAddr::V4(addr) = iface.addr.ip()
+                && !addr.is_loopback()
+                && !addr.is_link_local()
+                && !addr.is_broadcast()
+            {
+                return Some(addr);
+            }
+        }
+    }
+    None
+}
+
+async fn create_socket(iface_name: String) -> SapResult<UdpSocket> {
+    let multicast_addr = Ipv4Addr::from(DEFAULT_MULTICAST_ADDRESS);
+    let iface_ip =
+        get_iface_ipv4(&iface_name).ok_or_else(|| Error::NoIpAddress(iface_name.clone()))?;
+    let local_addr = SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), DEFAULT_SAP_PORT);
 
     let socket = Socket::new(Domain::IPV4, Type::DGRAM, Some(Protocol::UDP))?;
     socket.set_reuse_address(true)?;
     socket.set_nonblocking(true)?;
     socket.bind(&SockAddr::from(local_addr))?;
-    socket.join_multicast_v4(&multicast_addr, &local_ip)?;
+    socket.join_multicast_v4(&multicast_addr, &iface_ip)?;
 
     let socket = UdpSocket::from_std(socket.into())?;
 

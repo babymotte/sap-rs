@@ -14,16 +14,20 @@ async fn main() -> Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
+    let iface_name = std::env::args()
+        .nth(1)
+        .expect("specify interface name as first argument");
+
     tosub::build_root("sap-browser")
         .catch_signals()
         .with_timeout(Duration::from_secs(1))
-        .start(run)
+        .start(|s| run(s, iface_name))
         .await?;
 
     Ok(())
 }
 
-async fn run(subsys: SubsystemHandle) -> Result<()> {
+async fn run(subsys: SubsystemHandle, iface_name: String) -> Result<()> {
     let (wb, mut on_wb_disconnect, _) = connect_with_default_config().await.into_diagnostic()?;
 
     wb.set_client_name("SAP browser").await.ok();
@@ -31,7 +35,7 @@ async fn run(subsys: SubsystemHandle) -> Result<()> {
         .await
         .into_diagnostic()?;
 
-    let (_sap, mut events) = Sap::new(&subsys).await.into_diagnostic()?;
+    let (_sap, mut events) = Sap::new(&subsys, iface_name).await.into_diagnostic()?;
 
     loop {
         select! {

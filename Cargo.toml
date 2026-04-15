@@ -1,7 +1,7 @@
 [package]
 name = "sap-rs"
-version = "0.7.2"
-edition = "2021"
+version = "0.8.0"
+edition = "2024"
 authors = ["Michael Bachmann <mbachmann@bbmsoft.net>"]
 description = "A pure Rust implementation of the Session Announcement Protocol"
 repository = "https://github.com/babymotte/sap-rs"
@@ -10,25 +10,26 @@ keywords = ["sap", "sdp", "audio", "video"]
 categories = ["multimedia", "network-programming"]
 
 [dependencies]
+if-addrs = "0.15.0"
 lazy_static = "1.5.0"
 miette = "7.2.0"
 murmur3 = "0.5.2"
 sdp = "0.17.1"
-socket2 = "0.6.2"
+socket2 = "0.6.3"
 thiserror = "2.0.18"
-tokio = { version = "1.48.0", features = [
+tokio = { version = "1.52.0", features = [
     "macros",
     "net",
     "rt",
     "sync",
     "time",
 ] }
-tosub = "1.0.0"
+tosub = "1.1.1"
 tracing = "0.1.41"
 
 [dev-dependencies]
 miette = { version = "7.2.0", features = ["fancy"] }
-tracing-subscriber = { version = "0.3.22", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
 worterbuch-client = "1.5.0-alpha.3"
 
 [lints.rust]
